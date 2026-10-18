@@ -1,0 +1,39 @@
+# -----------------------------------
+# Build the FastAPI Backend
+# -----------------------------------
+FROM python:3.12-slim
+
+# Install uv for fast dependency management
+RUN pip install uv
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN uv pip install --system --no-cache-dir -r requirements.txt
+
+# The build context is the backend directory in Render.
+# Keep the package layout expected by imports such as `backend.api`.
+COPY main.py ./backend/main.py
+COPY agents/ ./backend/agents/
+COPY api/ ./backend/api/
+COPY auth/ ./backend/auth/
+COPY config/ ./backend/config/
+COPY database/ ./backend/database/
+COPY LLM/ ./backend/LLM/
+COPY models/ ./backend/models/
+COPY prompts/ ./backend/prompts/
+COPY session/ ./backend/session/
+COPY seed.py ./backend/seed.py
+COPY structured/ ./backend/structured/
+COPY tools/ ./backend/tools/
+
+# Ensure backend is recognized as a package and persistent directories exist
+RUN touch ./backend/__init__.py
+RUN mkdir -p /data
+ENV SQLITE_DB_PATH=/data/clinico.db
+ENV LANGGRAPH_CHECKPOINT_DB_PATH=/data/clinico_memory.sqlite
+
+# Expose port and run Uvicorn dynamically with $PORT (Render standard)
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

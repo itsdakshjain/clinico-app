@@ -1,0 +1,88 @@
+from functools import lru_cache
+from pathlib import Path
+import os
+
+from dotenv import load_dotenv
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
+# from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+import yaml
+ 
+load_dotenv()
+
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "model.yaml"
+
+def _load_model_configs() -> tuple[str, dict[str, dict]]:
+    """Read and validate all named model configurations."""
+    with CONFIG_PATH.open(encoding="utf-8") as config_file:
+        config = yaml.safe_load(config_file) or {}
+
+    models = config.get("models")
+    if not isinstance(models, dict) or not models:
+        raise ValueError("model.yaml must contain at least one model under 'models'")
+    default_model = config.get("default_model")
+    if default_model not in models:
+        raise ValueError("model.yaml default_model must match a key under 'models'")
+
+    required = {"provider", "model", "api_key_env"}
+    for name, model_config in models.items():
+        missing = required - model_config.keys()
+        if missing:
+            raise ValueError(
+                f"model '{name}' is missing required field(s): {', '.join(sorted(missing))}"
+            )
+        if model_config["provider"] not in {"groq", "google", "huggingface"}:
+            raise ValueError(f"model '{name}' provider must be either 'groq', 'google', or 'huggingface'")
+        for field in required:
+            if not isinstance(model_config[field], str) or not model_config[field].strip():
+                raise ValueError(f"model '{name}' field '{field}' must be a non-empty string")
+    return default_model, models
+
+
+@lru_cache(maxsize=None)
+def get_llm(model_name: str | None = None):
+
+    default_model, models = _load_model_configs()
+    selected_name = model_name or default_model
+    if selected_name not in models:
+        options = ", ".join(models)
+        raise ValueError(f"Unknown model '{selected_name}'. Choose one of: {options}")
+    config = models[selected_name]
+    api_key = os.getenv(config["api_key_env"])
+    if not api_key and config.get("provider") == "google":
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            f"Set {config['api_key_env']} in environment before starting the agent."
+        )
+
+    common_options = {
+        "model": config["model"],
+        "temperature": config.get("temperature", 0),
+        "max_tokens": config.get("max_tokens"),
+    }
+    common_options = {key: value for key, value in common_options.items() if value is not None}
+
+    if config["provider"] == "groq":
+        return ChatGroq(api_key=api_key, request_timeout=25, **common_options)
+
+    # if config["provider"] == "huggingface":
+    #     # HuggingFaceEndpoint uses ``repo_id`` as its model identifier.  Do
+    #     # not also pass the provider-neutral ``model`` option: the client
+    #     # rejects requests containing both.
+    #     huggingface_options = {
+    #         "temperature": config.get("temperature", 0),
+    #         "max_new_tokens": config.get("max_tokens"),
+    #     }
+    #     huggingface_options = {
+    #         key: value for key, value in huggingface_options.items() if value is not None
+    #     }
+    #     llm = HuggingFaceEndpoint(
+    #         repo_id = str(config["model"]),
+    #         huggingfacehub_api_token=api_key,
+    #         **huggingface_options,
+    #     )
+    #     return ChatHuggingFace(llm=llm)
+
+    # Google uses a different keyword for its key, but the same YAML shape.
+    return ChatGoogleGenerativeAI(google_api_key=api_key, request_timeout=15, **common_options)
